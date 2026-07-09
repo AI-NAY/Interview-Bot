@@ -8,19 +8,21 @@ from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMe
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 import gspread
 from google.oauth2.service_account import Credentials
-import anthropic
+import google.generativeai as genai
 
 app = Flask(__name__)
 
 LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GOOGLE_SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
 GOOGLE_CREDS_JSON = os.environ["GOOGLE_CREDS_JSON"]
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+genai.configure(api_key=GEMINI_API_KEY)
+gemini_model = genai.GenerativeModel("gemini-2.0-flash")
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 creds_dict = json.loads(GOOGLE_CREDS_JSON)
@@ -31,6 +33,25 @@ sheet = gc.open_by_key(GOOGLE_SHEET_ID)
 # In-memory session store: { user_id: {...state...} }
 # NOTE: resets if the server restarts (free-tier limitation) — acceptable for MVP
 sessions = {}
+
+
+def gemini_generate(prompt, history=None):
+    """Call Gemini with a plain prompt, or with chat history for multi-turn."""
+    if history:
+        chat = gemini_model.start_chat(history=history)
+        resp = chat.send_message(prompt)
+    else:
+        resp = gemini_model.generate_content(prompt)
+    return resp.text
+
+
+def to_gemini_history(turns):
+    """Convert our simple [{role, content}] list into Gemini chat history format."""
+    out = []
+    for t in turns:
+        role = "model" if t["role"] == "assistant" else "user"
+        out.append({"role": role, "parts": [t["content"]]})
+    return out
 
 
 def get_questions():
@@ -44,7 +65,7 @@ def get_categories():
 
 
 def analyze_jd(jd_text, job_type):
-    """Ask Claude to score questions against the JD and return ranked list."""
+    """Ask Gemini to score questions against the JD and return ranked list."""
     questions = get_questions()
     categories = get_categories()
 
@@ -75,24 +96,20 @@ Job Description ของบริษัท:
 
 (ทำครบ 8 ข้อ)
 
-จบด้วยประโค: "พร้อมเริ่มสัมภาษณ์จริงหรือยัง? พิมพ์ 'พร้อม' เพื่อเริ่ม"
+จบด้วยประโยค: "พร้อมเริ่มสัมภาษณ์จริงหรือยัง? พิมพ์ 'พร้อม' เพื่อเริ่ม"
 """
 
-    resp = claude.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1500,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return resp.content[0].text, relevant_q
+    text = gemini_generate(prompt)
+    return text, relevant_q
 
 
 def conduct_interview_turn(user_id, user_message):
     """Handle one turn of the live interview simulation."""
     state = sessions[user_id]
     history = state["history"]
-    history.append({"role": "user", "content": user_message})
 
-    system_prompt = f"""คุณคือผู้สัมภาษณ์งานมืออาชีพตำแหน่ง {state['job_type']}
+    if not history:
+        system_context = f"""คุณคือผู้สัมภาษณ์งานมืออาชีพตำแหน่ง {state['job_type']}
 กำลังสัมภาษณ์ผู้สมัครจริงจัง ใช้คำถามจากชุดนี้เป็นแนวทาง (ถามทีละข้อ ไม่ถามซ้ำข้อเดิม):
 {json.dumps(state['selected_questions'], ensure_ascii=False)}
 
@@ -100,16 +117,16 @@ def conduct_interview_turn(user_id, user_message):
 - ถามทีละคำถามเท่านั้น สุภาพแต่จริงจังแบบสัมภาษณ์งานจริง
 - หลังผู้สมัครตอบแต่ละข้อ ให้ถามคำถามถัดไปทันที ไม่ต้อง comment คำตอบระหว่างทาง
 - ถ้าถามครบ {state['total_questions']} ข้อแล้ว ให้บอกว่า "สัมภาษณ์จบแล้วครับ กำลังประมวลผลคะแนน..." แล้วหยุด
-- นับจำนวนคำถามที่ถามไปแล้วในใจ ปัจจุบันถามไปแล้ว {state['q_asked']} ข้อ จาก {state['total_questions']} ข้อ
+- เริ่มด้วยคำถามแรกได้เลย
 """
+        reply = gemini_generate(system_context)
+        history.append({"role": "assistant", "content": reply})
+        state["q_asked"] += 1
+        return reply
 
-    resp = claude.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=500,
-        system=system_prompt,
-        messages=history,
-    )
-    reply = resp.content[0].text
+    gemini_history = to_gemini_history(history)
+    reply = gemini_generate(user_message, history=gemini_history)
+    history.append({"role": "user", "content": user_message})
     history.append({"role": "assistant", "content": reply})
     state["q_asked"] += 1
 
@@ -144,12 +161,7 @@ def generate_score_report(user_id):
 จบด้วย: "ต้องการฝึกใหม่ไหม? พิมพ์ 'เริ่มใหม่' เพื่อสัมภาษณ์รอบใหม่ทั้งหมด หรือส่ง JD ใหม่ได้เลย"
 """
 
-    resp = claude.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1200,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    report = resp.content[0].text
+    report = gemini_generate(prompt)
 
     score_match = re.search(r"คะแนนรวม[:\s]*([0-9]+)", report)
     score = score_match.group(1) if score_match else "-"
