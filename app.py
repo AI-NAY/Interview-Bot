@@ -28,7 +28,7 @@ configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 genai.configure(api_key=GEMINI_API_KEY)
-# ใช้ gemini-pro เพื่อความชัวร์และรองรับไลบรารีทุกเวอร์ชัน
+# แก้ไขตรงนี้เป็น "gemini-pro" แบบไม่มี models/ นำหน้า เพื่อให้ผ่านไลบรารีรุ่นเก่า
 gemini_model = genai.GenerativeModel("gemini-pro")
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -218,7 +218,6 @@ def handle_message(event):
     state = sessions.get(user_id)
     reply = ""
 
-    # ดำเนินการประมวลผลข้อความแบบตรงไปตรงมาเพื่อให้ใช้ Reply Token ได้ทันที
     if text in ["เริ่มใหม่", "รีเซ็ต", "reset"]:
         sessions.pop(user_id, None)
         reply = "เริ่มใหม่ทั้งหมดแล้วครับ 🔄\nส่ง Job Description (JD) ของตำแหน่งที่จะสัมภาษณ์มาได้เลย พร้อมระบุว่าเป็น 'ช่างเทคนิค' หรือ 'วิศวกร'"
@@ -253,7 +252,6 @@ def handle_message(event):
     else:
         reply = "พิมพ์ 'เริ่มใหม่' เพื่อฝึกสัมภาษณ์รอบใหม่ หรือส่ง JD ใหม่ได้เลยครับ"
 
-    # ส่งข้อความกลับหาผู้ใช้ด้วย Reply Token (รองรับสิทธิ์ LINE OA บัญชีฟรี 100%)
     try:
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
@@ -269,7 +267,7 @@ def handle_message(event):
 
 @app.route("/", methods=["GET"])
 def health():
-    return "Interview Bot is running on Free-Tier Mode"
+    return "Interview Bot is running on Fixed Free Mode"
 
 
 if __name__ == "__main__":
