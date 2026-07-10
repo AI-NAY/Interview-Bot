@@ -29,7 +29,8 @@ configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+# แก้ไขจุดนี้: ปรับชื่อเรียก Model ให้แมตช์กับไลบรารีเวอร์ชันต่างๆ ของ Google
+gemini_model = genai.GenerativeModel("models/gemini-1.5-flash")
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 creds_dict = json.loads(GOOGLE_CREDS_JSON)
@@ -44,7 +45,6 @@ sessions = {}
 def gemini_generate(prompt, history=None):
     """Call Gemini with a plain prompt or with structured multi-turn chat."""
     if history:
-        # ปรับโครงสร้างประวัติแชทให้ตรงตามเงื่อนไขของ Gemini SDK เวอร์ชันล่าสุด
         chat = gemini_model.start_chat(history=history)
         resp = chat.send_message(prompt)
     else:
@@ -238,7 +238,6 @@ def process_message_async(user_id, text):
     else:
         reply = "พิมพ์ 'เริ่มใหม่' เพื่อฝึกสัมภาษณ์รอบใหม่ หรือส่ง JD ใหม่ได้เลยครับ"
 
-    # ส่งคำตอบกลับหาผู้ใช้ด้วย Push Message เพื่อรองรับการคิดวิเคราะห์ข้อมูลนานๆ ได้อย่างอิสระ
     try:
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
@@ -259,7 +258,7 @@ def callback():
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
-    return "OK"  # ตอบรับกลับหา LINE ทันทีภายใน 1 วินาที เพื่อรักษาสถานะเชื่อมต่อ
+    return "OK"
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -267,7 +266,6 @@ def handle_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
 
-    # เรียกใช้ระบบ Threading เพื่อแยกเลนส่งสัญญาณไปรันฟังก์ชันประมวลผลอยู่เบื้องหลัง
     thread = threading.Thread(target=process_message_async, args=(user_id, text))
     thread.start()
 
