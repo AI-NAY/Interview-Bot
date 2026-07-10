@@ -27,9 +27,9 @@ GOOGLE_CREDS_JSON = os.environ["GOOGLE_CREDS_JSON"]
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ตั้งค่าใช้งาน Gemini API ตามโครงสร้างยุคปัจจุบัน
+# ตั้งค่าใช้งาน Gemini API โดยระบุรุ่นโมเดลให้เจาะจงผ่านท่อหลัก
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+gemini_model = genai.GenerativeModel("models/gemini-1.5-flash-latest")
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 creds_dict = json.loads(GOOGLE_CREDS_JSON)
@@ -266,7 +266,7 @@ def handle_message(event):
 
 @app.route("/", methods=["GET"])
 def health():
-    return "Interview Bot is running on Updated Version"
+    return "Interview Bot is running on Stable Endpoint"
 
 
 if __name__ == "__main__":
