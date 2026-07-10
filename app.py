@@ -1,7 +1,6 @@
 import os
 import json
 import re
-import threading
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -9,7 +8,7 @@ from linebot.v3.messaging import (
     Configuration,
     ApiClient,
     MessagingApi,
-    PushMessageRequest,
+    ReplyMessageRequest,
     TextMessage,
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
@@ -29,8 +28,8 @@ configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 genai.configure(api_key=GEMINI_API_KEY)
-# แก้ไขจุดนี้: ปรับชื่อเรียก Model ให้แมตช์กับไลบรารีเวอร์ชันต่างๆ ของ Google
-gemini_model = genai.GenerativeModel("models/gemini-1.5-flash")
+# ใช้ gemini-pro เพื่อความชัวร์และรองรับไลบรารีทุกเวอร์ชัน
+gemini_model = genai.GenerativeModel("gemini-pro")
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 creds_dict = json.loads(GOOGLE_CREDS_JSON)
@@ -86,7 +85,7 @@ def analyze_jd(jd_text, job_type):
     relevant_q = [q for q in questions if q.get("job_type") == job_type]
 
     if not relevant_q:
-        relevant_q = questions[:10]  # Fallback เผื่อไม่พบข้อมูลตรงสายงาน
+        relevant_q = questions[:10]
 
     prompt = f"""คุณคือผู้เชี่ยวชาญวิเคราะห์ Job Description เพื่อทำนายคำถามสัมภาษณ์งานสายโรงงาน
 
@@ -199,11 +198,27 @@ def generate_score_report(user_id):
     return report
 
 
-def process_message_async(user_id, text):
-    """ฟังก์ชันทำงานเบื้องหลัง (Background Thread) เพื่อความเสถียร แก้ไขปัญหา LINE Timeout"""
+@app.route("/callback", methods=["POST"])
+def callback():
+    signature = request.headers.get("X-Line-Signature", "")
+    body = request.get_data(as_text=True)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+    return "OK"
+
+
+@handler.add(MessageEvent, message=TextMessageContent)
+def handle_message(event):
+    user_id = event.source.user_id
+    text = event.message.text.strip()
+    reply_token = event.reply_token
+
     state = sessions.get(user_id)
     reply = ""
 
+    # ดำเนินการประมวลผลข้อความแบบตรงไปตรงมาเพื่อให้ใช้ Reply Token ได้ทันที
     if text in ["เริ่มใหม่", "รีเซ็ต", "reset"]:
         sessions.pop(user_id, None)
         reply = "เริ่มใหม่ทั้งหมดแล้วครับ 🔄\nส่ง Job Description (JD) ของตำแหน่งที่จะสัมภาษณ์มาได้เลย พร้อมระบุว่าเป็น 'ช่างเทคนิค' หรือ 'วิศวกร'"
@@ -238,41 +253,23 @@ def process_message_async(user_id, text):
     else:
         reply = "พิมพ์ 'เริ่มใหม่' เพื่อฝึกสัมภาษณ์รอบใหม่ หรือส่ง JD ใหม่ได้เลยครับ"
 
+    # ส่งข้อความกลับหาผู้ใช้ด้วย Reply Token (รองรับสิทธิ์ LINE OA บัญชีฟรี 100%)
     try:
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
-            line_bot_api.push_message(
-                PushMessageRequest(
-                    to=user_id, messages=[TextMessage(text=reply[:4900])]
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[TextMessage(text=reply[:4900])],
                 )
             )
     except Exception as e:
-        print(f"Error sending LINE push message: {e}")
-
-
-@app.route("/callback", methods=["POST"])
-def callback():
-    signature = request.headers.get("X-Line-Signature", "")
-    body = request.get_data(as_text=True)
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-    return "OK"
-
-
-@handler.add(MessageEvent, message=TextMessageContent)
-def handle_message(event):
-    user_id = event.source.user_id
-    text = event.message.text.strip()
-
-    thread = threading.Thread(target=process_message_async, args=(user_id, text))
-    thread.start()
+        print(f"Error sending LINE reply message: {e}")
 
 
 @app.route("/", methods=["GET"])
 def health():
-    return "Interview Bot is running with Threading enabled"
+    return "Interview Bot is running on Free-Tier Mode"
 
 
 if __name__ == "__main__":
