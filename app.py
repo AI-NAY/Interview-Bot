@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import requests
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -14,7 +15,6 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 import gspread
 from google.oauth2.service_account import Credentials
-import google.generativeai as genai
 
 app = Flask(__name__)
 
@@ -27,10 +27,6 @@ GOOGLE_CREDS_JSON = os.environ["GOOGLE_CREDS_JSON"]
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ตั้งค่าใช้งาน Gemini API โดยระบุรุ่นโมเดลให้เจาะจงผ่านท่อหลัก
-genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("models/gemini-1.5-flash-latest")
-
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 creds_dict = json.loads(GOOGLE_CREDS_JSON)
 creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
@@ -39,50 +35,52 @@ sheet = gc.open_by_url(GOOGLE_SHEET_URL)
 
 sessions = {}
 
-
 def gemini_generate(prompt, history=None):
-    """Call Gemini with a plain prompt or with structured multi-turn chat."""
+    """ต่อท่อตรงผ่านข้อกำหนด HTTP API ของ Google (v1/gemini-1.5-flash)"""
+    # ใช้ URL ทางการเวอร์ชัน v1 สากล ไม่ผ่าน v1beta ตัวปัญหา
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    headers = {"Content-Type": "application/json"}
+    
+    # แปลงโครงสร้างข้อความ/ประวัติให้เข้ากับข้อกำหนดของ Google API
+    contents = []
     if history:
-        chat = gemini_model.start_chat(history=history)
-        resp = chat.send_message(prompt)
-    else:
-        resp = gemini_model.generate_content(prompt)
-    return resp.text
-
-
-def to_gemini_history(turns):
-    """Convert simple dictionary history into Gemini content types format."""
-    out = []
-    for t in turns:
-        role = "model" if t["role"] == "assistant" else "user"
-        out.append({"role": role, "parts": [t["content"]]})
-    return out
-
+        for t in history:
+            role = "model" if t["role"] == "assistant" else "user"
+            contents.append({"role": role, "parts": [{"text": t["content"]}]})
+    
+    # เพิ่มคำสั่งล่าสุดเข้าไปในเนื้อหา
+    contents.append({"role": "user", "parts": [{"text": prompt}]})
+    
+    payload = {"contents": contents}
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        res_json = response.json()
+        # ดึงข้อความผลลัพธ์ที่ตอบกลับมา
+        return res_json["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception as e:
+        print(f"Gemini API Error: {e}")
+        if response:
+            print(f"Response body: {response.text}")
+        return "ขออภัยครับ ระบบประมวลผล AI เกิดข้อผิดพลาดชั่วคราว กรุณาลองใหม่อีกครั้ง"
 
 def get_questions():
     ws = sheet.worksheet("Questions")
     return ws.get_all_records()
 
-
 def get_categories():
     ws = sheet.worksheet("Categories")
     return ws.get_all_records()
 
-
 def analyze_jd(jd_text, job_type):
-    """Ask Gemini to score questions against the JD and return ranked list."""
     try:
         questions = get_questions()
         categories = get_categories()
     except Exception as e:
         print(f"Error fetching sheets data: {e}")
-        return (
-            "เกิดข้อผิดพลาดในการดึงข้อมูลจาก Google Sheet กรุณาตรวจสอบสิทธิ์และการเชื่อมต่อ",
-            [],
-        )
+        return ("เกิดข้อผิดพลาดในการดึงข้อมูลจาก Google Sheet กรุณาตรวจสอบสิทธิ์และการเชื่อมต่อ", [])
 
     relevant_q = [q for q in questions if q.get("job_type") == job_type]
-
     if not relevant_q:
         relevant_q = questions[:10]
 
@@ -114,9 +112,7 @@ Job Description ของบริษัท:
     text = gemini_generate(prompt)
     return text, relevant_q
 
-
 def conduct_interview_turn(user_id, user_message):
-    """Handle one turn of the live interview simulation."""
     state = sessions[user_id]
     history = state["history"]
 
@@ -136,8 +132,7 @@ def conduct_interview_turn(user_id, user_message):
         state["q_asked"] += 1
         return reply
 
-    gemini_history = to_gemini_history(history)
-    reply = gemini_generate(user_message, history=gemini_history)
+    reply = gemini_generate(user_message, history=history)
     history.append({"role": "user", "content": user_message})
     history.append({"role": "assistant", "content": reply})
     state["q_asked"] += 1
@@ -146,7 +141,6 @@ def conduct_interview_turn(user_id, user_message):
         state["stage"] = "scoring"
 
     return reply
-
 
 def generate_score_report(user_id):
     state = sessions[user_id]
@@ -172,30 +166,17 @@ def generate_score_report(user_id):
 
 จบด้วย: "ต้องการฝึกใหม่ไหม? พิมพ์ 'เริ่มใหม่' เพื่อสัมภาษณ์รอบใหม่ทั้งหมด หรือส่ง JD ใหม่ได้เลย"
 """
-
     report = gemini_generate(prompt)
-
     score_match = re.search(r"คะแนนรวม[:\s]*([0-9]+)", report)
     score = score_match.group(1) if score_match else "-"
 
     try:
         ws = sheet.worksheet("Sessions")
-        ws.append_row(
-            [
-                f"S{user_id[:8]}",
-                user_id,
-                "",  # date
-                state["job_type"],
-                score,
-                state["total_questions"],
-                "จบแล้ว",
-            ]
-        )
+        ws.append_row([f"S{user_id[:8]}", user_id, "", state["job_type"], score, state["total_questions"], "จบแล้ว"])
     except Exception as e:
         print("Sheet write error:", e)
 
     return report
-
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -206,7 +187,6 @@ def callback():
     except InvalidSignatureError:
         abort(400)
     return "OK"
-
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
@@ -263,11 +243,9 @@ def handle_message(event):
     except Exception as e:
         print(f"Error sending LINE reply message: {e}")
 
-
 @app.route("/", methods=["GET"])
 def health():
-    return "Interview Bot is running on Stable Endpoint"
-
+    return "Interview Bot is running on Raw HTTP Mode"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
