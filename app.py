@@ -15,7 +15,7 @@ app = Flask(__name__)
 LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-GOOGLE_SHEET_ID = os.environ["GOOGLE_SHEET_ID"]
+GOOGLE_SHEET_URL = os.environ["GOOGLE_SHEET_URL"]
 GOOGLE_CREDS_JSON = os.environ["GOOGLE_CREDS_JSON"]
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
@@ -28,7 +28,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 creds_dict = json.loads(GOOGLE_CREDS_JSON)
 creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc = gspread.authorize(creds)
-sheet = gc.open_by_key(GOOGLE_SHEET_ID)
+sheet = gc.open_by_url(GOOGLE_SHEET_URL)
 
 # In-memory session store: { user_id: {...state...} }
 # NOTE: resets if the server restarts (free-tier limitation) — acceptable for MVP
