@@ -1,23 +1,16 @@
 import os
 import json
 import re
-import threading
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.messaging import (
-    Configuration,
-    ApiClient,
-    MessagingApi,
-    PushMessageRequest,
-    TextMessage,
-)
+from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 import gspread
 from google.oauth2.service_account import Credentials
 import google.generativeai as genai
 
-app = Flask(name)
+app = Flask(__name__)
 
 LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
@@ -37,14 +30,14 @@ creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc = gspread.authorize(creds)
 sheet = gc.open_by_url(GOOGLE_SHEET_URL)
 
-# In-memory session store
+# In-memory session store: { user_id: {...state...} }
+# NOTE: resets if the server restarts (free-tier limitation) — acceptable for MVP
 sessions = {}
 
 
 def gemini_generate(prompt, history=None):
-    """Call Gemini with a plain prompt or with structured multi-turn chat."""
+    """Call Gemini with a plain prompt, or with chat history for multi-turn."""
     if history:
-        # แก้ไขโครงสร้างเพื่อให้เข้ากับ SDK เวอร์ชันใหม่
         chat = gemini_model.start_chat(history=history)
         resp = chat.send_message(prompt)
     else:
@@ -53,7 +46,7 @@ def gemini_generate(prompt, history=None):
 
 
 def to_gemini_history(turns):
-    """Convert simple dictionary history into Gemini content types format."""
+    """Convert our simple [{role, content}] list into Gemini chat history format."""
     out = []
     for t in turns:
         role = "model" if t["role"] == "assistant" else "user"
@@ -73,22 +66,12 @@ def get_categories():
 
 def analyze_jd(jd_text, job_type):
     """Ask Gemini to score questions against the JD and return ranked list."""
-    try:
-        questions = get_questions()
-        categories = get_categories()
-    except Exception as e:
-        print(f"Error fetching sheets data: {e}")
-        return (
-            "เกิดข้อผิดพลาดในการดึงข้อมูลจาก Google Sheet กรุณาตรวจสอบสิทธิ์และการเชื่อมต่อ",
-            [],
-        )
+    questions = get_questions()
+    categories = get_categories()
 
-    relevant_q = [q for q in questions if q.get("job_type") == job_type]
+    relevant_q = [q for q in questions if q["job_type"] == job_type]
 
-    if not relevant_q:
-        relevant_q = questions[:10]  # Fallback เผื่อไม่พบข้อมูลตรงสายงาน
-
-    prompt = f"""คุณคือผู้เชี่ยวชาญวิเคราะห์ Job Description เพื่อทำนายคำถามสัมภาษณ์งานสายโรงงาน
+    prompt = f"""คุณคือผู้เชี่ยวชาญวิเคราะห์ Job Description เพื่อทำนายคำถามสัมภาษณ์งาน
 
 Job Description ของบริษัท:
 {jd_text}
@@ -102,7 +85,7 @@ Job Description ของบริษัท:
 งานของคุณ:
 1. วิเคราะห์ keyword ใน JD เทียบกับ keywords ของแต่ละคำถาม
 2. ปรับ % โอกาสออก (base_prob_%) ขึ้นหรือลงตามความเกี่ยวข้องกับ JD จริง
-3. เลือกคำถามที่มีโอกาสออกสูงสุด 5-8 ข้อ เรียงจากมากไปน้อย
+3. เลือกคำถามที่มีโอกาสออกสูงสุด 8 ข้อ เรียงจากมากไปน้อย
 
 ตอบกลับเป็นข้อความสั้น กระชับ อ่านง่ายในแชท LINE รูปแบบนี้:
 
@@ -111,8 +94,11 @@ Job Description ของบริษัท:
 1. [ชื่อคำถาม] — XX%
    💡 แนวทางตอบ: [answer_guide แบบย่อ]
 
+(ทำครบ 8 ข้อ)
+
 จบด้วยประโยค: "พร้อมเริ่มสัมภาษณ์จริงหรือยัง? พิมพ์ 'พร้อม' เพื่อเริ่ม"
 """
+
     text = gemini_generate(prompt)
     return text, relevant_q
 
@@ -125,7 +111,7 @@ def conduct_interview_turn(user_id, user_message):
     if not history:
         system_context = f"""คุณคือผู้สัมภาษณ์งานมืออาชีพตำแหน่ง {state['job_type']}
 กำลังสัมภาษณ์ผู้สมัครจริงจัง ใช้คำถามจากชุดนี้เป็นแนวทาง (ถามทีละข้อ ไม่ถามซ้ำข้อเดิม):
-{json.dumps(state['selected_questions'] if state['selected_questions'] else [], ensure_ascii=False)}
+{json.dumps(state['selected_questions'], ensure_ascii=False)}
 
 กติกา:
 - ถามทีละคำถามเท่านั้น สุภาพแต่จริงจังแบบสัมภาษณ์งานจริง
@@ -182,27 +168,38 @@ def generate_score_report(user_id):
 
     try:
         ws = sheet.worksheet("Sessions")
-        ws.append_row(
-            [
-                f"S{user_id[:8]}",
-                user_id,
-                "",  # date
-                state["job_type"],
-                score,
-                state["total_questions"],
-                "จบแล้ว",
-            ]
-        )
+        ws.append_row([
+            f"S{user_id[:8]}",
+            user_id,
+            state.get("date", ""),
+            state["job_type"],
+            score,
+            state["total_questions"],
+            "จบแล้ว",
+        ])
     except Exception as e:
         print("Sheet write error:", e)
 
     return report
 
 
-def process_message_async(user_id, text):
-    """ฟังก์ชันทำงานเบื้องหลัง (Background Thread) ป้องกันปัญหา LINE Timeout"""
+@app.route("/callback", methods=["POST"])
+def callback():
+    signature = request.headers["X-Line-Signature"]
+    body = request.get_data(as_text=True)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+    return "OK"
+
+
+@handler.add(MessageEvent, message=TextMessageContent)
+def handle_message(event):
+    user_id = event.source.user_id
+    text = event.message.text.strip()
+
     state = sessions.get(user_id)
-    reply = ""
 
     if text in ["เริ่มใหม่", "รีเซ็ต", "reset"]:
         sessions.pop(user_id, None)
@@ -218,7 +215,7 @@ def process_message_async(user_id, text):
             "selected_questions": selected_q,
             "history": [],
             "q_asked": 0,
-            "total_questions": min(5, len(selected_q)) if selected_q else 3,
+            "total_questions": min(5, len(selected_q)),
         }
         reply = analysis
 
@@ -235,48 +232,25 @@ def process_message_async(user_id, text):
             score_report = generate_score_report(user_id)
             reply = reply + "\n\n" + score_report
             state["stage"] = "done"
+
     else:
         reply = "พิมพ์ 'เริ่มใหม่' เพื่อฝึกสัมภาษณ์รอบใหม่ หรือส่ง JD ใหม่ได้เลยครับ"
 
-    # ส่งข้อความกลับหาผู้ใช้ด้วย Push Message แทน Reply Token ที่มักหมดอายุเมื่อรอนาน
-    try:
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
-            line_bot_api.push_message(
-                PushMessageRequest(
-                    to=user_id, messages=[TextMessage(text=reply[:4900])]
-                )
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=reply[:4900])],
             )
-    except Exception as e:
-        print(f"Error sending LINE push message: {e}")
-
-
-@app.route("/callback", methods=["POST"])
-def callback():
-    signature = request.headers.get("X-Line-Signature", "")
-    body = request.get_data(as_text=True)
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-    return "OK"  # ส่งกลับหา LINE ทันทีภายใน 1 วินาทีเพื่อป้องกัน Timeout
-
-
-@handler.add(MessageEvent, message=TextMessageContent)
-def handle_message(event):
-    user_id = event.source.user_id
-    text = event.message.text.strip()
-
-    # แยก Thread ทำงานเบื้องหลัง ไม่ให้ LINE ตัดการเชื่อมต่อขณะประมวลผลข้อมูล
-    thread = threading.Thread(target=process_message_async, args=(user_id, text))
-    thread.start()
+        )
 
 
 @app.route("/", methods=["GET"])
 def health():
-    return "Interview Bot is running with Threading enabled"
+    return "Interview Bot is running"
 
 
-if name == "main":
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
