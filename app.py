@@ -27,9 +27,9 @@ GOOGLE_CREDS_JSON = os.environ["GOOGLE_CREDS_JSON"]
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
+# ตั้งค่าใช้งาน Gemini API ตามโครงสร้างยุคปัจจุบัน
 genai.configure(api_key=GEMINI_API_KEY)
-# แก้ไขตรงนี้เป็น "gemini-pro" แบบไม่มี models/ นำหน้า เพื่อให้ผ่านไลบรารีรุ่นเก่า
-gemini_model = genai.GenerativeModel("gemini-pro")
+gemini_model = genai.GenerativeModel("gemini-1.5-flash")
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 creds_dict = json.loads(GOOGLE_CREDS_JSON)
@@ -37,7 +37,6 @@ creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 gc = gspread.authorize(creds)
 sheet = gc.open_by_url(GOOGLE_SHEET_URL)
 
-# In-memory session store
 sessions = {}
 
 
@@ -267,7 +266,7 @@ def handle_message(event):
 
 @app.route("/", methods=["GET"])
 def health():
-    return "Interview Bot is running on Fixed Free Mode"
+    return "Interview Bot is running on Updated Version"
 
 
 if __name__ == "__main__":
