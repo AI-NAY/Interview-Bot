@@ -3,3 +3,4 @@ line-bot-sdk
 gspread
 google-auth
 google-generativeai
+gunicorn
