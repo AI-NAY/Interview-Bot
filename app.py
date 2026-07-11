@@ -38,7 +38,7 @@ sessions = {}
 
 def gemini_generate(prompt, history=None):
     """ต่อท่อตรงผ่านข้อกำหนด HTTP API ของ Google (v1/gemini-1.5-flash)"""
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
 
     contents = []
